@@ -1,0 +1,102 @@
+pipeline{
+    
+    agent any
+    
+     tools{
+        jdk 'jdk17'
+        nodejs 'node16'
+     }
+    environment {
+        SCANNER_HOME=tool 'sonar-scanner'
+    }
+    
+    stages {
+        stage('checkout'){
+            steps{
+                git branch: 'main', url: 'https://github.com/soumen321/Devsecops-Project1.git'
+            }
+        }
+        stage('Sonarqube Analysis'){
+            steps{
+                withSonarQubeEnv('sonar-server') {
+                  sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Game \
+                    -Dsonar.projectKey=Game '''
+                }
+            }
+        }
+        stage('Quality Gate'){
+            steps{
+                 script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
+                }
+            }
+        }
+        stage('Install Dependency'){
+            steps{
+                script {
+                    sh "npm install"
+                }
+            }
+        }
+ 
+        stage("FS Scan"){
+            steps {
+                sh "trivy fs . > trivyfs.txt "
+            }
+        }
+        
+        stage('Build docker image'){
+            steps{
+                script{
+                      sh 'docker build -t techsoumen/gamecicd:${BUILD_NUMBER} .'
+                }
+            }
+        }
+
+	   stage('Trivy Scan Image') {
+            steps {
+                     sh "trivy image --format table -o trivy-image-report.html techsoumen/gamecicd:${BUILD_NUMBER}"
+                }
+         }
+   
+          stage('Push to Docker Hub'){
+            steps {
+                echo "Pushing the image to docker image"
+                 script {
+                    
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                       sh "docker tag techsoumen/gamecicd techsoumen/gamecicd:${BUILD_NUMBER}"    
+                       sh 'docker push techsoumen/gamecicd:${BUILD_NUMBER}'
+                   }
+                    
+                 }
+               
+            } 
+        }
+         stage('Update Deployment File') {
+             
+              environment {
+                 GIT_REPO_NAME = "Devsecops-Project1"
+                 GIT_USER_NAME = "soumen321"
+                }
+              
+               steps {
+                   
+                   
+                   withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
+                        sh "git config user.email bhattacharjee.soumen@gmail.com"
+                        sh "git config user.name soumen321"
+                        sh "sed -i 's/replaceImageTag/${BUILD_NUMBER}/g' k8s/deployment.yaml"
+                        sh "cat k8s/deployment.yaml"
+                        sh 'git add k8s/deployment.yaml'
+                        sh "git commit -m 'Done by Jenkins Job change manifest: ${env.BUILD_NUMBER}'"
+                        sh 'git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:main'
+                    }
+              
+                   
+            }
+        
+       }
+       
+    }
+}
